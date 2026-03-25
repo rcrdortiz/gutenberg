@@ -8,7 +8,47 @@
 if ( ! class_exists( 'WP_Sync_Post_Meta_Storage' ) ) {
 	require_once __DIR__ . '/interface-wp-sync-storage.php';
 	require_once __DIR__ . '/class-wp-sync-post-meta-storage.php';
+	require_once __DIR__ . '/class-wp-sync-object-cache-storage.php';
+	require_once __DIR__ . '/class-wp-sync-custom-table-storage.php';
 	require_once __DIR__ . '/class-wp-http-polling-sync-server.php';
+	require_once __DIR__ . '/class-wp-sync-lightweight-endpoint.php';
+}
+
+if ( ! function_exists( 'gutenberg_create_sync_storage' ) ) {
+	/**
+	 * Creates the appropriate sync storage backend based on the
+	 * 'wp_sync_storage_backend' filter.
+	 *
+	 * Available backends:
+	 *   - 'post-meta'    (default) Uses wp_postmeta table.
+	 *   - 'object-cache' Uses wp_cache (Redis/Memcached). Requires external object cache.
+	 *   - 'custom-table' Uses a dedicated wp_sync_updates table with proper indexes.
+	 *
+	 * @return WP_Sync_Storage
+	 */
+	function gutenberg_create_sync_storage(): WP_Sync_Storage {
+		/**
+		 * Filters the sync storage backend.
+		 *
+		 * @param string $backend The storage backend identifier.
+		 */
+		$backend = apply_filters( 'wp_sync_storage_backend', 'post-meta' );
+
+		switch ( $backend ) {
+			case 'object-cache':
+				if ( wp_using_ext_object_cache() ) {
+					return new WP_Sync_Object_Cache_Storage();
+				}
+				// Fall back to post-meta if no external object cache is available.
+				return new WP_Sync_Post_Meta_Storage();
+
+			case 'custom-table':
+				return new WP_Sync_Custom_Table_Storage();
+
+			default:
+				return new WP_Sync_Post_Meta_Storage();
+		}
+	}
 }
 
 if ( ! function_exists( 'gutenberg_register_sync_storage_post_type' ) ) {
@@ -56,11 +96,61 @@ if ( ! function_exists( 'gutenberg_register_collaboration_rest_routes' ) ) {
 	 * Registers REST API routes for collaborative editing.
 	 */
 	function gutenberg_register_collaboration_rest_routes(): void {
-		$sync_storage = new WP_Sync_Post_Meta_Storage();
+		$sync_storage = gutenberg_create_sync_storage();
 		$sync_server  = new WP_HTTP_Polling_Sync_Server( $sync_storage );
 		$sync_server->register_routes();
 	}
 	add_action( 'rest_api_init', 'gutenberg_register_collaboration_rest_routes' );
+}
+
+if ( ! function_exists( 'gutenberg_register_collaboration_lightweight_endpoint' ) ) {
+	/**
+	 * Registers the lightweight sync endpoint if selected.
+	 *
+	 * Available endpoint types via the 'wp_sync_endpoint_type' filter:
+	 *   - 'rest-api'    (default) Standard REST API endpoint.
+	 *   - 'lightweight' Minimal endpoint that bypasses the REST API stack.
+	 */
+	function gutenberg_register_collaboration_lightweight_endpoint(): void {
+		/**
+		 * Filters the sync endpoint type.
+		 *
+		 * @param string $type The endpoint type identifier.
+		 */
+		$endpoint_type = apply_filters( 'wp_sync_endpoint_type', 'rest-api' );
+
+		if ( 'lightweight' !== $endpoint_type ) {
+			return;
+		}
+
+		$sync_storage = gutenberg_create_sync_storage();
+		$sync_server  = new WP_HTTP_Polling_Sync_Server( $sync_storage );
+		$endpoint     = new WP_Sync_Lightweight_Endpoint( $sync_server );
+		$endpoint->register();
+	}
+	add_action( 'init', 'gutenberg_register_collaboration_lightweight_endpoint' );
+}
+
+if ( ! function_exists( 'gutenberg_inject_sync_endpoint_url' ) ) {
+	/**
+	 * Injects the sync endpoint URL into the page when using
+	 * the lightweight endpoint, so the client-side code can use it.
+	 */
+	function gutenberg_inject_sync_endpoint_url(): void {
+		$endpoint_type = apply_filters( 'wp_sync_endpoint_type', 'rest-api' );
+
+		if ( 'lightweight' !== $endpoint_type ) {
+			return;
+		}
+
+		$url = WP_Sync_Lightweight_Endpoint::get_endpoint_url();
+		wp_add_inline_script(
+			'wp-sync',
+			'window._wpSyncEndpointUrl = ' . wp_json_encode( $url ) . ';',
+			'before'
+		);
+	}
+	add_action( 'admin_init', 'gutenberg_inject_sync_endpoint_url' );
 }
 
 if ( ! function_exists( 'wp_collaboration_register_meta' ) ) {

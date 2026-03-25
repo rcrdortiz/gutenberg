@@ -16,6 +16,23 @@ import {
 
 const SYNC_API_PATH = '/wp-sync/v1/updates';
 
+/**
+ * Returns the apiFetch options for the sync endpoint.
+ * Uses the lightweight endpoint URL if available, otherwise
+ * falls back to the standard REST API path.
+ */
+function getSyncFetchOptions(): { path: string } | { url: string } {
+	const customUrl = (
+		globalThis as typeof globalThis & {
+			_wpSyncEndpointUrl?: string;
+		}
+	 )._wpSyncEndpointUrl;
+	if ( customUrl ) {
+		return { url: customUrl };
+	}
+	return { path: SYNC_API_PATH };
+}
+
 export function uint8ArrayToBase64( data: Uint8Array ): string {
 	let binary = '';
 	const len = data.byteLength;
@@ -110,7 +127,7 @@ export function postSyncUpdate(
 ): Promise< SyncResponse > {
 	return apiFetch( {
 		method: 'POST',
-		path: SYNC_API_PATH,
+		...getSyncFetchOptions(),
 		data: payload,
 	} );
 }
@@ -128,7 +145,7 @@ export function postSyncUpdateNonBlocking( payload: SyncPayload ): void {
 
 	apiFetch( {
 		method: 'POST',
-		path: SYNC_API_PATH,
+		...getSyncFetchOptions(),
 		data: payload,
 		keepalive: true,
 	} ).catch( () => {} );
